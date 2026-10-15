@@ -134,11 +134,16 @@
     <button id="next" type="button">Next ⏭</button>
     <button id="mute" type="button" aria-pressed="true">🔇 Muted</button>
     <button id="shuffle" type="button" aria-pressed="false">🔀 Shuffle</button>
-    <button id="all" type="button" aria-pressed="false" title="Plays every video simultaneously, muted. Heavy: can slow or crash the tab.">🧱 Play all at once</button>
+    <button id="all" type="button" aria-pressed="false" title="Plays up to 24 videos simultaneously, muted, with paging.">🧱 Play all at once</button>
     <span id="position">Video – of – · Loops 0</span>
   </div>
 
-  <div id="wall" hidden aria-label="All videos"></div>
+  <div id="wallNav" class="controls" hidden>
+    <button id="wallPrev" type="button">◀ Prev 24</button>
+    <button id="wallNext" type="button">Next 24 ▶</button>
+    <span id="wallPos" class="hint"></span>
+  </div>
+  <div id="wall" hidden aria-label="Videos playing together"></div>
 
   <ol id="queue" aria-label="Queue"><li class="queue-empty">Paste a channel link to load its videos.</li></ol>
 </div>
@@ -152,7 +157,7 @@
     form: $('form'), link: $('link'), apiKey: $('apiKey'), keyBox: $('keyBox'),
     banner: $('banner'), message: $('message'), dot: $('dot'), statusText: $('statusText'),
     prev: $('prev'), toggle: $('toggle'), next: $('next'), mute: $('mute'),
-    shuffle: $('shuffle'), all: $('all'), wall: $('wall'), position: $('position'), queue: $('queue')
+    shuffle: $('shuffle'), all: $('all'), wallNav: $('wallNav'), wallPrev: $('wallPrev'), wallNext: $('wallNext'), wallPos: $('wallPos'), wall: $('wall'), position: $('position'), queue: $('queue')
   };
 
   var API = 'https://www.googleapis.com/youtube/v3/';
@@ -357,24 +362,33 @@
   setInterval(function () { renderQueue(false); syncUi(); }, 1000);
 
   /* ---------- wall: every video at once ---------- */
-  var wallPlayers = [], wallOn = false, wallToken = 0;
+  var WALL_MAX = 24, wallPlayers = [], wallOn = false, wallToken = 0, wallPage = 0, wallIds = [];
 
   function stopWall() {
     wallToken++; wallOn = false;
     wallPlayers.forEach(function (p) { try { p.destroy(); } catch (e) {} });
     wallPlayers = [];
-    els.wall.textContent = ''; els.wall.hidden = true;
+    els.wall.textContent = ''; els.wall.hidden = true; els.wallNav.hidden = true;
     els.all.setAttribute('aria-pressed', 'false');
   }
 
-  function startWall() {
+  function startWall(page) {
     if (!apiReady || !ids.length) { showMessage('Load a channel first.'); return; }
-    var list = ids.slice(), token = ++wallToken;
+    if (!wallOn) wallIds = ids.slice();
+    var pages = Math.ceil(wallIds.length / WALL_MAX);
+    wallPage = Math.max(0, Math.min(page || 0, pages - 1));
+    wallPlayers.forEach(function (p) { try { p.destroy(); } catch (e) {} });
+    wallPlayers = [];
+    var list = wallIds.slice(wallPage * WALL_MAX, (wallPage + 1) * WALL_MAX), token = ++wallToken;
     wallOn = true;
     player.pauseVideo();
     els.wall.hidden = false; els.wall.textContent = '';
+    els.wallNav.hidden = false;
+    els.wallPrev.disabled = wallPage === 0;
+    els.wallNext.disabled = wallPage >= pages - 1;
+    els.wallPos.textContent = 'Videos ' + (wallPage * WALL_MAX + 1) + '–' + (wallPage * WALL_MAX + list.length) + ' of ' + wallIds.length;
     els.all.setAttribute('aria-pressed', 'true');
-    showMessage('Playing ' + list.length + ' videos at once (muted). This is heavy and may slow or freeze the tab.');
+    showMessage('Playing up to ' + WALL_MAX + ' videos at once (muted).');
     var i = 0;
     (function next() {   // stagger creation so the tab stays responsive
       if (token !== wallToken || i >= list.length) return;
@@ -392,7 +406,9 @@
   }
 
   /* ---------- events ---------- */
-  els.all.addEventListener('click', function () { if (wallOn) { stopWall(); showMessage(''); } else startWall(); });
+  els.all.addEventListener('click', function () { if (wallOn) { stopWall(); showMessage(''); } else startWall(0); });
+  els.wallPrev.addEventListener('click', function () { startWall(wallPage - 1); });
+  els.wallNext.addEventListener('click', function () { startWall(wallPage + 1); });
   els.form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     showMessage('');

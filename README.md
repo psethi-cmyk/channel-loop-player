@@ -9,6 +9,7 @@ Single self-contained `index.html` (no build step, no framework), using the YouT
 - `@handle`, `/c/name`, `/user/name` links need a YouTube Data API v3 key, entered in the page's "API key" field.
   The key (and last link) is saved only in your browser's localStorage. It is never part of this repo.
 - With a key, video titles are shown in the queue.
+- "Play all at once" shows up to 24 muted players at a time, with Prev/Next 24 paging.
 - The YouTube player loads only a channel's most recent ~200 videos.
 
 ## Run locally
