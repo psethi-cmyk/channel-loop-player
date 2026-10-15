@@ -85,6 +85,10 @@
   #queue .title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
   .queue-empty { padding: 16px; color: var(--muted); }
 
+  #wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 14px; }
+  #wall .tile { aspect-ratio: 16 / 9; background: #000; border-radius: 6px; overflow: hidden; position: relative; }
+  #wall .tile > div, #wall .tile iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+
   @media (max-width: 520px) {
     .wrap { padding: 12px; }
     #queue img { width: 96px; }
@@ -130,8 +134,11 @@
     <button id="next" type="button">Next ⏭</button>
     <button id="mute" type="button" aria-pressed="true">🔇 Muted</button>
     <button id="shuffle" type="button" aria-pressed="false">🔀 Shuffle</button>
+    <button id="all" type="button" aria-pressed="false" title="Plays every video simultaneously, muted. Heavy: can slow or crash the tab.">🧱 Play all at once</button>
     <span id="position">Video – of – · Loops 0</span>
   </div>
+
+  <div id="wall" hidden aria-label="All videos"></div>
 
   <ol id="queue" aria-label="Queue"><li class="queue-empty">Paste a channel link to load its videos.</li></ol>
 </div>
@@ -145,7 +152,7 @@
     form: $('form'), link: $('link'), apiKey: $('apiKey'), keyBox: $('keyBox'),
     banner: $('banner'), message: $('message'), dot: $('dot'), statusText: $('statusText'),
     prev: $('prev'), toggle: $('toggle'), next: $('next'), mute: $('mute'),
-    shuffle: $('shuffle'), position: $('position'), queue: $('queue')
+    shuffle: $('shuffle'), all: $('all'), wall: $('wall'), position: $('position'), queue: $('queue')
   };
 
   var API = 'https://www.googleapis.com/youtube/v3/';
@@ -349,7 +356,43 @@
   }
   setInterval(function () { renderQueue(false); syncUi(); }, 1000);
 
+  /* ---------- wall: every video at once ---------- */
+  var wallPlayers = [], wallOn = false, wallToken = 0;
+
+  function stopWall() {
+    wallToken++; wallOn = false;
+    wallPlayers.forEach(function (p) { try { p.destroy(); } catch (e) {} });
+    wallPlayers = [];
+    els.wall.textContent = ''; els.wall.hidden = true;
+    els.all.setAttribute('aria-pressed', 'false');
+  }
+
+  function startWall() {
+    if (!apiReady || !ids.length) { showMessage('Load a channel first.'); return; }
+    var list = ids.slice(), token = ++wallToken;
+    wallOn = true;
+    player.pauseVideo();
+    els.wall.hidden = false; els.wall.textContent = '';
+    els.all.setAttribute('aria-pressed', 'true');
+    showMessage('Playing ' + list.length + ' videos at once (muted). This is heavy and may slow or freeze the tab.');
+    var i = 0;
+    (function next() {   // stagger creation so the tab stays responsive
+      if (token !== wallToken || i >= list.length) return;
+      var id = list[i++], tile = document.createElement('div'), slot = document.createElement('div');
+      tile.className = 'tile'; tile.appendChild(slot); els.wall.appendChild(tile);
+      var vars = { autoplay: 1, mute: 1, playsinline: 1, rel: 0, loop: 1, playlist: id };
+      if (isHttp) vars.origin = location.origin;
+      wallPlayers.push(new YT.Player(slot, {
+        width: '100%', height: '100%', videoId: id, playerVars: vars,
+        events: { onReady: function (e) { e.target.mute(); e.target.playVideo(); },
+                  onError: function (e) { if (e.data === 152 || e.data === 153) showMessage(BLOCKED_MSG); } }
+      }));
+      setTimeout(next, 150);
+    })();
+  }
+
   /* ---------- events ---------- */
+  els.all.addEventListener('click', function () { if (wallOn) { stopWall(); showMessage(''); } else startWall(); });
   els.form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     showMessage('');
@@ -359,6 +402,7 @@
     store('clp_link', els.link.value.trim());
     store('clp_key', key);
     var token = ++loadToken;
+    if (wallOn) stopWall();
     titles = {};
     els.statusText.textContent = 'Resolving…';
     resolveChannelId(parsed, key).then(function (channelId) {
