@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channel Loop Player</title>
+<meta name="description" content="Paste a YouTube channel link and play every video, looping forever.">
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --text: #16181d; --muted: #5d6573;
+    --border: #d9dde4; --accent: #d0021b; --accent-text: #ffffff;
+    --hl: #fdecee; --warn-bg: #fff4d6; --warn-text: #5c4300; --err: #b00020;
+    --ok: #1a9c4b; --idle: #8a919e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101215; --surface: #1a1d23; --text: #eceef2; --muted: #9aa3b2;
+      --border: #2e333c; --accent: #ff4d5e; --accent-text: #16181d;
+      --hl: #2c1b1f; --warn-bg: #3a2f10; --warn-text: #f5dc9a; --err: #ff8a98;
+      --ok: #3ddc7a; --idle: #6b7280;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--idle); flex: none; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 25%, transparent); }
+  #statusText { font-size: .85rem; color: var(--muted); }
+
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .row { display: flex; gap: 8px; }
+  input[type=text], input[type=password] {
+    flex: 1; min-width: 0; padding: 10px 12px; font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  }
+  button {
+    font: inherit; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button[aria-pressed=true] { background: var(--hl); border-color: var(--accent); }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  details .row { margin-top: 8px; }
+  .hint { color: var(--muted); font-size: .85rem; margin: 8px 0 0; }
+
+  #banner, #message {
+    margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; font-size: .92rem;
+  }
+  #banner { background: var(--warn-bg); color: var(--warn-text); }
+  #message { background: var(--surface); border: 1px solid var(--err); color: var(--err); }
+  [hidden] { display: none !important; }
+
+  .player-box {
+    margin-top: 14px; position: relative; width: 100%; aspect-ratio: 16 / 9;
+    background: #000; border-radius: 10px; overflow: hidden;
+  }
+  .player-box iframe, .player-box #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  #position { margin-left: auto; color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+
+  #queue {
+    list-style: none; margin: 14px 0 0; padding: 0; max-height: 440px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  }
+  #queue li { border-bottom: 1px solid var(--border); }
+  #queue li:last-child { border-bottom: 0; }
+  #queue button {
+    display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+    border: 0; border-radius: 0; background: transparent; padding: 8px 10px;
+  }
+  #queue button:hover { background: var(--hl); }
+  #queue li.current button { background: var(--hl); box-shadow: inset 4px 0 0 var(--accent); }
+  #queue img { width: 120px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--border); flex: none; }
+  #queue .num { color: var(--muted); font-size: .8rem; width: 2.2em; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+  #queue .title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+  .queue-empty { padding: 16px; color: var(--muted); }
+
+  @media (max-width: 520px) {
+    .wrap { padding: 12px; }
+    #queue img { width: 96px; }
+    #position { margin-left: 0; width: 100%; }
+    .row.main { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="dot" id="dot" aria-hidden="true"></span>
+    <h1>Channel Loop Player</h1>
+    <span id="statusText" role="status">Paused</span>
+  </header>
+
+  <div id="banner" hidden>
+    Opened from a local file. YouTube refuses to play embedded videos here (error 153).
+    Serve this page over http(s), e.g. <code>python -m http.server 8080</code>, and open <code>http://localhost:8080</code>.
+  </div>
+
+  <form id="form" class="row main" autocomplete="off">
+    <input type="text" id="link" placeholder="Channel link or @handle" aria-label="YouTube channel link" spellcheck="false">
+    <button class="primary" type="submit">Play channel</button>
+  </form>
+
+  <details id="keyBox">
+    <summary>API key (optional)</summary>
+    <div class="row">
+      <input type="password" id="apiKey" placeholder="YouTube Data API v3 key" aria-label="YouTube Data API key" autocomplete="off">
+    </div>
+    <p class="hint">Needed only for @handle, /c/ and /user/ links, and to show video titles. /channel/UC… links work without a key. The key is stored in this browser only.</p>
+  </details>
+  <p class="hint">The YouTube player loads only a channel's most recent ~200 videos, so the loop covers those.</p>
+
+  <div id="message" role="alert" hidden></div>
+
+  <div class="player-box"><div id="player"></div></div>
+
+  <div class="controls">
+    <button id="prev" type="button">⏮ Prev</button>
+    <button id="toggle" type="button">▶ Play</button>
+    <button id="next" type="button">Next ⏭</button>
+    <button id="mute" type="button" aria-pressed="true">🔇 Muted</button>
+    <button id="shuffle" type="button" aria-pressed="false">🔀 Shuffle</button>
+    <span id="position">Video – of – · Loops 0</span>
+  </div>
+
+  <ol id="queue" aria-label="Queue"><li class="queue-empty">Paste a channel link to load its videos.</li></ol>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var els = {
+    form: $('form'), link: $('link'), apiKey: $('apiKey'), keyBox: $('keyBox'),
+    banner: $('banner'), message: $('message'), dot: $('dot'), statusText: $('statusText'),
+    prev: $('prev'), toggle: $('toggle'), next: $('next'), mute: $('mute'),
+    shuffle: $('shuffle'), position: $('position'), queue: $('queue')
+  };
+
+  var API = 'https://www.googleapis.com/youtube/v3/';
+  var BLOCKED_MSG = 'YouTube blocks playback on this page. Open it from an http(s) address, not a local file.';
+
+  var player = null, apiReady = false, pendingPlaylist = null;
+  var ids = [], titles = {}, loops = 0, shuffled = false;
+  var errorStreak = 0, lastQueueKey = '', loadToken = 0;
+
+  var isFile = location.protocol === 'file:';
+  var isHttp = location.protocol === 'http:' || location.protocol === 'https:';
+  if (isFile) els.banner.hidden = false;
+
+  /* ---------- storage ---------- */
+  function store(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+  function load(key) { try { return localStorage.getItem(key) || ''; } catch (e) { return ''; } }
+  els.link.value = load('clp_link');
+  els.apiKey.value = load('clp_key');
+  if (els.apiKey.value) els.keyBox.open = true;
+
+  /* ---------- messages ---------- */
+  function showMessage(text) { els.message.textContent = text; els.message.hidden = !text; }
+
+  /* ---------- link parsing ---------- */
+  function parseChannel(input) {
+    var s = (input || '').trim();
+    if (!s) return null;
+    var uc = s.match(/(?:^|[\/=])(UC[\w-]{22})(?=$|[\/?#&])/);
+    if (uc) return { kind: 'id', value: uc[1] };
+    if (/^@[\w.\-]+$/.test(s)) return { kind: 'handle', value: s };
+    var path = s;
+    try { path = new URL(/^[a-z]+:\/\//i.test(s) ? s : 'https://' + s).pathname; } catch (e) {}
+    path = decodeURIComponent(path);
+    var m;
+    if ((m = path.match(/^\/(@[^\/?#]+)/))) return { kind: 'handle', value: m[1] };
+    if ((m = path.match(/^\/user\/([^\/?#]+)/))) return { kind: 'user', value: m[1] };
+    if ((m = path.match(/^\/c\/([^\/?#]+)/))) return { kind: 'custom', value: m[1] };
+    return null;
+  }
+
+  function apiGet(path, params, key) {
+    var q = Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+    return fetch(API + path + '?' + q + '&key=' + encodeURIComponent(key)).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error((j && j.error && j.error.message) || ('HTTP ' + r.status));
+        return j;
+      });
+    });
+  }
+
+  function resolveChannelId(parsed, key) {
+    if (parsed.kind === 'id') return Promise.resolve(parsed.value);
+    if (!key) return Promise.reject(new Error('This link type needs an API key. Open "API key (optional)" and enter one, or paste a /channel/UC… link.'));
+    function first(params) {
+      return apiGet('channels', Object.assign({ part: 'id' }, params), key).then(function (j) {
+        return j.items && j.items[0] ? j.items[0].id : null;
+      });
+    }
+    var p;
+    if (parsed.kind === 'handle') p = first({ forHandle: parsed.value });
+    else if (parsed.kind === 'user') p = first({ forUsername: parsed.value });
+    else p = first({ forHandle: '@' + parsed.value }).then(function (id) {
+      return id || first({ forUsername: parsed.value });
+    });
+    return p.then(function (id) {
+      if (!id) throw new Error('Channel not found for "' + parsed.value + '".');
+      return id;
+    });
+  }
+
+  function fetchTitles(playlistId, key, token) {
+    var pages = 0;
+    function page(pageToken) {
+      var params = { part: 'snippet', maxResults: 50, playlistId: playlistId };
+      if (pageToken) params.pageToken = pageToken;
+      return apiGet('playlistItems', params, key).then(function (j) {
+        if (token !== loadToken) return;
+        (j.items || []).forEach(function (it) {
+          var sn = it.snippet || {};
+          if (sn.resourceId && sn.resourceId.videoId) titles[sn.resourceId.videoId] = sn.title;
+        });
+        renderQueue(true);
+        pages++;
+        if (j.nextPageToken && pages < 4) return page(j.nextPageToken); // player caps near 200
+      });
+    }
+    return page('');
+  }
+
+  /* ---------- YouTube player ---------- */
+  var tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  tag.onerror = function () { showMessage('Could not load the YouTube player API. Check your connection or ad blocker.'); };
+  document.head.appendChild(tag);
+
+  window.onYouTubeIframeAPIReady = function () {
+    var vars = { autoplay: 1, mute: 1, playsinline: 1, rel: 0 };
+    if (isHttp) vars.origin = location.origin;
+    player = new YT.Player('player', {
+      width: '100%', height: '100%', playerVars: vars,
+      events: { onReady: onReady, onStateChange: onStateChange, onError: onError }
+    });
+  };
+
+  function onReady() {
+    apiReady = true;
+    if (pendingPlaylist) { startPlaylist(pendingPlaylist); pendingPlaylist = null; }
+    syncUi();
+  }
+
+  function startPlaylist(listId) {
+    loops = 0; errorStreak = 0; ids = []; lastQueueKey = ''; shuffled = false;
+    els.shuffle.setAttribute('aria-pressed', 'false');
+    player.loadPlaylist({ list: listId, listType: 'playlist', index: 0 });
+    player.setLoop(true);
+    player.mute();
+    renderQueue(true);
+  }
+
+  function onStateChange(e) {
+    var S = YT.PlayerState;
+    if (e.data === S.PLAYING) { errorStreak = 0; showMessage(''); }
+    if (e.data === S.ENDED) {
+      var list = player.getPlaylist() || [];
+      if (list.length && player.getPlaylistIndex() === list.length - 1) {
+        loops++;
+        player.playVideoAt(0);
+      }
+    }
+    renderQueue(false);
+    syncUi();
+  }
+
+  function onError(e) {
+    var c = e.data;
+    if (c === 152 || c === 153) { showMessage(BLOCKED_MSG); return; }
+    if (c === 100 || c === 101 || c === 150) {
+      errorStreak++;
+      if (errorStreak > Math.max(ids.length, 1)) {
+        showMessage('No video in this channel could be played (all unavailable or embedding disabled).');
+        return;
+      }
+      player.nextVideo();
+      return;
+    }
+    showMessage('Playback error (code ' + c + ').');
+  }
+
+  /* ---------- queue + UI ---------- */
+  function renderQueue(force) {
+    if (!player || !player.getPlaylist) return;
+    var list = player.getPlaylist() || [];
+    var idx = player.getPlaylistIndex ? player.getPlaylistIndex() : -1;
+    var key = list.join(',');
+    if (force || key !== lastQueueKey) {
+      lastQueueKey = key; ids = list;
+      els.queue.textContent = '';
+      if (!list.length) {
+        var empty = document.createElement('li');
+        empty.className = 'queue-empty';
+        empty.textContent = 'Loading videos…';
+        els.queue.appendChild(empty);
+      }
+      list.forEach(function (id, i) {
+        var li = document.createElement('li');
+        var b = document.createElement('button');
+        b.type = 'button'; b.dataset.index = i;
+        var n = document.createElement('span'); n.className = 'num'; n.textContent = i + 1;
+        var img = document.createElement('img');
+        img.src = 'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg';
+        img.alt = ''; img.loading = 'lazy';
+        var t = document.createElement('span'); t.className = 'title'; t.textContent = titles[id] || id;
+        b.append(n, img, t); li.appendChild(b); els.queue.appendChild(li);
+      });
+    }
+    Array.prototype.forEach.call(els.queue.children, function (li, i) {
+      var cur = i === idx && !li.classList.contains('queue-empty');
+      li.classList.toggle('current', cur);
+      var btn = li.firstElementChild;
+      if (btn && btn.tagName === 'BUTTON') {
+        if (cur) btn.setAttribute('aria-current', 'true'); else btn.removeAttribute('aria-current');
+      }
+      if (cur && !force) li.scrollIntoView({ block: 'nearest' });
+    });
+  }
+
+  function syncUi() {
+    if (!player || !apiReady || !player.getPlayerState) return;
+    var playing = player.getPlayerState() === YT.PlayerState.PLAYING;
+    els.dot.classList.toggle('live', playing);
+    els.statusText.textContent = playing ? 'Live' : 'Paused';
+    els.toggle.textContent = playing ? '⏸ Pause' : '▶ Play';
+    var muted = player.isMuted();
+    els.mute.textContent = muted ? '🔇 Muted' : '🔊 Sound on';
+    els.mute.setAttribute('aria-pressed', String(muted));
+    var idx = player.getPlaylistIndex ? player.getPlaylistIndex() : -1;
+    var total = (player.getPlaylist() || []).length;
+    els.position.textContent = 'Video ' + (idx >= 0 && total ? idx + 1 : '–') + ' of ' + (total || '–') + ' · Loops ' + loops;
+  }
+  setInterval(function () { renderQueue(false); syncUi(); }, 1000);
+
+  /* ---------- events ---------- */
+  els.form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    showMessage('');
+    var parsed = parseChannel(els.link.value);
+    if (!parsed) { showMessage('Could not recognise that link. Use /channel/UC…, /@handle, /c/name, /user/name or @handle.'); return; }
+    var key = els.apiKey.value.trim();
+    store('clp_link', els.link.value.trim());
+    store('clp_key', key);
+    var token = ++loadToken;
+    titles = {};
+    els.statusText.textContent = 'Resolving…';
+    resolveChannelId(parsed, key).then(function (channelId) {
+      if (token !== loadToken) return;
+      var playlistId = 'UU' + channelId.slice(2);
+      if (apiReady) startPlaylist(playlistId); else pendingPlaylist = playlistId;
+      if (key) fetchTitles(playlistId, key, token).catch(function (err) {
+        showMessage('Titles unavailable: ' + err.message);
+      });
+    }).catch(function (err) {
+      els.statusText.textContent = 'Paused';
+      showMessage(err.message);
+    });
+  });
+
+  els.prev.addEventListener('click', function () { if (apiReady) player.previousVideo(); });
+  els.next.addEventListener('click', function () { if (apiReady) player.nextVideo(); });
+  els.toggle.addEventListener('click', function () {
+    if (!apiReady) return;
+    if (player.getPlayerState() === YT.PlayerState.PLAYING) player.pauseVideo(); else player.playVideo();
+  });
+  els.mute.addEventListener('click', function () {
+    if (!apiReady) return;
+    if (player.isMuted()) player.unMute(); else player.mute();
+    syncUi();
+  });
+  els.shuffle.addEventListener('click', function () {
+    if (!apiReady || !ids.length) return;
+    shuffled = !shuffled;
+    player.setShuffle(shuffled);
+    els.shuffle.setAttribute('aria-pressed', String(shuffled));
+    setTimeout(function () { renderQueue(true); syncUi(); }, 400);
+  });
+  els.queue.addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-index]');
+    if (b && apiReady) player.playVideoAt(Number(b.dataset.index));
+  });
+})();
+</script>
+</body>
+</html>
